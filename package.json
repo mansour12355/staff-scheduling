@@ -1,0 +1,17 @@
+{
+    "name": "staff-scheduling",
+    "version": "1.0.0",
+    "description": "Real-time staff scheduling system with Socket.IO",
+    "main": "backend/server.js",
+    "scripts": {
+        "start": "node backend/server.js",
+        "dev": "cd backend && npm start"
+    },
+    "keywords": [
+        "scheduling",
+        "socket.io",
+        "real-time"
+    ],
+    "author": "",
+    "license": "MIT"
+}
