@@ -4,8 +4,8 @@
     "description": "Real-time staff scheduling system with Socket.IO",
     "main": "backend/server.js",
     "scripts": {
-        "start": "node backend/server.js",
-        "dev": "cd backend && npm start"
+        "start": "cd backend && node server.js",
+        "postinstall": "cd backend && npm install"
     },
     "keywords": [
         "scheduling",
@@ -13,5 +13,8 @@
         "real-time"
     ],
     "author": "",
-    "license": "MIT"
+    "license": "MIT",
+    "engines": {
+        "node": ">=14.0.0"
+    }
 }
