@@ -422,7 +422,7 @@ async function handleScheduleSubmit(e) {
         loadSchedules();
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     } finally {
         btnText.textContent = originalText;
     }
@@ -447,7 +447,7 @@ async function deleteSchedule(id) {
         loadSchedules();
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     }
 }
 
@@ -538,7 +538,7 @@ function escapeHtml(text) {
 }
 
 function showError(message) {
-    alert(message);
+    showNotification(message, 'error');
 }
 
 // Edit Schedule
@@ -613,7 +613,7 @@ async function handleScheduleSubmit(e) {
         loadSchedules();
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     } finally {
         btnText.textContent = originalText;
     }
@@ -638,7 +638,7 @@ async function deleteSchedule(id) {
         loadSchedules();
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     }
 }
 
@@ -714,10 +714,10 @@ async function handleStaffSubmit(e) {
 
         closeStaffModal();
         loadAllStaff();
-        alert('Staff member added successfully!');
+        showNotification('Staff member added successfully!', 'success');
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     }
 }
 
@@ -729,7 +729,7 @@ function escapeHtml(text) {
 }
 
 function showError(message) {
-    alert(message);
+    showNotification(message, 'error');
 }
 
 // Show notification for real-time updates
