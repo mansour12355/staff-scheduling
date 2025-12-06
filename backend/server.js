@@ -54,111 +54,220 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Initialize SQLite Database
-const db = new sqlite3.Database('./database.db', (err) => {
-    if (err) {
-        console.error('Error opening database:', err);
-    } else {
-        console.log('Connected to SQLite database');
-        initializeDatabase();
-    }
-});
+// Database configuration - Auto-detect environment
+const DATABASE_URL = process.env.DATABASE_URL; // Railway provides this for PostgreSQL
+const USE_POSTGRES = !!DATABASE_URL;
+
+let db;
+
+if (USE_POSTGRES) {
+    // PostgreSQL for production (Railway)
+    const { Pool } = require('pg');
+    db = new Pool({
+        connectionString: DATABASE_URL,
+        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+    });
+    console.log('Using PostgreSQL database');
+    initializeDatabase();
+} else {
+    // SQLite for local development
+    const sqlite3 = require('sqlite3').verbose();
+    db = new sqlite3.Database('./database.db', (err) => {
+        if (err) {
+            console.error('Error opening database:', err);
+        } else {
+            console.log('Using SQLite database');
+            initializeDatabase();
+        }
+    });
+}
+
+// Database helper functions
+const dbQuery = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_POSTGRES) {
+            db.query(query, params, (err, result) => {
+                if (err) reject(err);
+                else resolve(result.rows);
+            });
+        } else {
+            db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        }
+    });
+};
+
+const dbRun = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_POSTGRES) {
+            db.query(query, params, (err, result) => {
+                if (err) reject(err);
+                else resolve(result);
+            });
+        } else {
+            db.run(query, params, function (err) {
+                if (err) reject(err);
+                else resolve({ lastID: this.lastID, changes: this.changes });
+            });
+        }
+    });
+};
+
+const dbGet = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_POSTGRES) {
+            db.query(query, params, (err, result) => {
+                if (err) reject(err);
+                else resolve(result.rows[0]);
+            });
+        } else {
+            db.get(query, params, (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            });
+        }
+    });
+};
 
 // Initialize database schema and seed data
-function initializeDatabase() {
-    db.serialize(() => {
-        // Create staff table
-        db.run(`
-      CREATE TABLE IF NOT EXISTS staff (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT,
-        google_id TEXT UNIQUE,
-        role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
+async function initializeDatabase() {
+    try {
+        if (USE_POSTGRES) {
+            // PostgreSQL schema
+            await dbRun(`
+                CREATE TABLE IF NOT EXISTS staff (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    email VARCHAR(255) UNIQUE NOT NULL,
+                    password_hash VARCHAR(255),
+                    google_id VARCHAR(255) UNIQUE,
+                    role VARCHAR(50) NOT NULL CHECK(role IN ('admin', 'staff')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
 
-        // Create schedules table
-        db.run(`
-      CREATE TABLE IF NOT EXISTS schedules (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        staff_id INTEGER NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT,
-        date TEXT NOT NULL,
-        start_time TEXT NOT NULL,
-        end_time TEXT NOT NULL,
-        location TEXT,
-        status TEXT NOT NULL CHECK(status IN ('scheduled', 'completed', 'cancelled')) DEFAULT 'scheduled',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
-      )
-    `);
+            await dbRun(`
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id SERIAL PRIMARY KEY,
+                    staff_id INTEGER NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    date VARCHAR(50) NOT NULL,
+                    start_time VARCHAR(50) NOT NULL,
+                    end_time VARCHAR(50) NOT NULL,
+                    location VARCHAR(255),
+                    status VARCHAR(50) NOT NULL CHECK(status IN ('scheduled', 'completed', 'cancelled')) DEFAULT 'scheduled',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+                )
+            `);
+        } else {
+            // SQLite schema
+            await dbRun(`
+                CREATE TABLE IF NOT EXISTS staff (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    email TEXT UNIQUE NOT NULL,
+                    password_hash TEXT,
+                    google_id TEXT UNIQUE,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+
+            await dbRun(`
+                CREATE TABLE IF NOT EXISTS schedules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    staff_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    date TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    end_time TEXT NOT NULL,
+                    location TEXT,
+                    status TEXT NOT NULL CHECK(status IN ('scheduled', 'completed', 'cancelled')) DEFAULT 'scheduled',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
+                )
+            `);
+        }
 
         // Check if we need to seed data
-        db.get('SELECT COUNT(*) as count FROM staff', (err, row) => {
-            if (row.count === 0) {
-                seedDatabase();
-            }
-        });
-    });
+        const result = await dbGet('SELECT COUNT(*) as count FROM staff');
+        if (result.count === 0) {
+            await seedDatabase();
+        }
+    } catch (error) {
+        console.error('Database initialization error:', error);
+    }
 }
 
 // Seed initial data
 async function seedDatabase() {
-    const adminPassword = await bcrypt.hash('admin123', 10);
-    const staffPassword = await bcrypt.hash('staff123', 10);
+    try {
+        const adminPassword = await bcrypt.hash('admin123', 10);
+        const staffPassword = await bcrypt.hash('staff123', 10);
 
-    db.serialize(() => {
         // Insert admin user
-        db.run(
-            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+        await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4)'
+                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
             ['Admin User', 'admin@schedule.com', adminPassword, 'admin']
         );
 
-        // Insert sample staff members
-        db.run(
-            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            ['John Doe', 'john@schedule.com', staffPassword, 'staff'],
-            function (err) {
-                if (!err) {
-                    const johnId = this.lastID;
-                    // Add sample schedules for John
-                    db.run(
-                        'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                        [johnId, 'Morning Shift', 'Front desk duty', '2025-12-06', '08:00', '16:00', 'Main Office', 'scheduled']
-                    );
-                    db.run(
-                        'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                        [johnId, 'Safety Training', 'Annual safety certification', '2025-12-08', '10:00', '12:00', 'Training Room B', 'scheduled']
-                    );
-                }
-            }
+        // Insert John Doe
+        const johnResult = await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id'
+                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+            ['John Doe', 'john@schedule.com', staffPassword, 'staff']
+        );
+        const johnId = USE_POSTGRES ? johnResult.rows[0].id : johnResult.lastID;
+
+        // Add sample schedules for John
+        await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
+                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [johnId, 'Morning Shift', 'Front desk duty', '2025-12-06', '08:00', '16:00', 'Main Office', 'scheduled']
+        );
+        await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
+                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [johnId, 'Safety Training', 'Annual safety certification', '2025-12-08', '10:00', '12:00', 'Training Room B', 'scheduled']
         );
 
-        db.run(
-            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            ['Jane Smith', 'jane@schedule.com', staffPassword, 'staff'],
-            function (err) {
-                if (!err) {
-                    const janeId = this.lastID;
-                    // Add sample schedules for Jane
-                    db.run(
-                        'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                        [janeId, 'Delivery Route A', 'North district deliveries', '2025-12-06', '09:00', '17:00', 'Warehouse', 'scheduled']
-                    );
-                    db.run(
-                        'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                        [janeId, 'Evening Shift', 'Customer service', '2025-12-07', '16:00', '00:00', 'Main Office', 'scheduled']
-                    );
-                }
-            }
+        // Insert Jane Smith
+        const janeResult = await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id'
+                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+            ['Jane Smith', 'jane@schedule.com', staffPassword, 'staff']
         );
-    });
+        const janeId = USE_POSTGRES ? janeResult.rows[0].id : janeResult.lastID;
 
-    console.log('Database seeded with initial data');
+        // Add sample schedules for Jane
+        await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
+                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [janeId, 'Delivery Route A', 'North district deliveries', '2025-12-06', '09:00', '17:00', 'Warehouse', 'scheduled']
+        );
+        await dbRun(
+            USE_POSTGRES
+                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
+                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [janeId, 'Evening Shift', 'Customer service', '2025-12-07', '16:00', '00:00', 'Main Office', 'scheduled']
+        );
+
+        console.log('Database seeded with initial data');
+    } catch (error) {
+        console.error('Error seeding database:', error);
+    }
 }
 
 // Authentication middleware
@@ -195,10 +304,16 @@ passport.serializeUser((user, done) => {
 });
 
 // Deserialize user from session
-passport.deserializeUser((id, done) => {
-    db.get('SELECT id, name, email, role FROM staff WHERE id = ?', [id], (err, user) => {
-        done(err, user);
-    });
+passport.deserializeUser(async (id, done) => {
+    try {
+        const user = await dbGet(
+            USE_POSTGRES ? 'SELECT id, name, email, role FROM staff WHERE id = $1' : 'SELECT id, name, email, role FROM staff WHERE id = ?',
+            [id]
+        );
+        done(null, user);
+    } catch (err) {
+        done(err);
+    }
 });
 
 // Configure Google OAuth Strategy
@@ -215,53 +330,47 @@ if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
                 const name = profile.displayName;
 
                 // Check if user exists by Google ID
-                db.get('SELECT * FROM staff WHERE google_id = ?', [googleId], async (err, user) => {
-                    if (err) {
-                        return done(err);
-                    }
+                const userByGoogleId = await dbGet(
+                    USE_POSTGRES ? 'SELECT * FROM staff WHERE google_id = $1' : 'SELECT * FROM staff WHERE google_id = ?',
+                    [googleId]
+                );
 
-                    if (user) {
-                        // User exists with this Google ID
-                        return done(null, user);
-                    }
+                if (userByGoogleId) {
+                    return done(null, userByGoogleId);
+                }
 
-                    // Check if user exists by email
-                    db.get('SELECT * FROM staff WHERE email = ?', [email], async (err, existingUser) => {
-                        if (err) {
-                            return done(err);
-                        }
+                // Check if user exists by email
+                const existingUser = await dbGet(
+                    USE_POSTGRES ? 'SELECT * FROM staff WHERE email = $1' : 'SELECT * FROM staff WHERE email = ?',
+                    [email]
+                );
 
-                        if (existingUser) {
-                            // Link Google ID to existing account
-                            db.run('UPDATE staff SET google_id = ? WHERE id = ?', [googleId, existingUser.id], (err) => {
-                                if (err) {
-                                    return done(err);
-                                }
-                                existingUser.google_id = googleId;
-                                return done(null, existingUser);
-                            });
-                        } else {
-                            // Create new user
-                            db.run(
-                                'INSERT INTO staff (name, email, google_id, role) VALUES (?, ?, ?, ?)',
-                                [name, email, googleId, 'staff'],
-                                function (err) {
-                                    if (err) {
-                                        return done(err);
-                                    }
-                                    const newUser = {
-                                        id: this.lastID,
-                                        name,
-                                        email,
-                                        google_id: googleId,
-                                        role: 'staff'
-                                    };
-                                    return done(null, newUser);
-                                }
-                            );
-                        }
-                    });
-                });
+                if (existingUser) {
+                    // Link Google ID to existing account
+                    await dbRun(
+                        USE_POSTGRES ? 'UPDATE staff SET google_id = $1 WHERE id = $2' : 'UPDATE staff SET google_id = ? WHERE id = ?',
+                        [googleId, existingUser.id]
+                    );
+                    existingUser.google_id = googleId;
+                    return done(null, existingUser);
+                }
+
+                // Create new user
+                const result = await dbRun(
+                    USE_POSTGRES
+                        ? 'INSERT INTO staff (name, email, google_id, role) VALUES ($1, $2, $3, $4) RETURNING id'
+                        : 'INSERT INTO staff (name, email, google_id, role) VALUES (?, ?, ?, ?)',
+                    [name, email, googleId, 'staff']
+                );
+                const newUserId = USE_POSTGRES ? result.rows[0].id : result.lastID;
+                const newUser = {
+                    id: newUserId,
+                    name,
+                    email,
+                    google_id: googleId,
+                    role: 'staff'
+                };
+                return done(null, newUser);
             } catch (error) {
                 return done(error);
             }
@@ -299,17 +408,18 @@ app.get('/api/auth/google/callback',
 );
 
 // Login endpoint
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
         return res.status(400).json({ error: 'Email and password required' });
     }
 
-    db.get('SELECT * FROM staff WHERE email = ?', [email], async (err, user) => {
-        if (err) {
-            return res.status(500).json({ error: 'Database error' });
-        }
+    try {
+        const user = await dbGet(
+            USE_POSTGRES ? 'SELECT * FROM staff WHERE email = $1' : 'SELECT * FROM staff WHERE email = ?',
+            [email]
+        );
 
         if (!user) {
             return res.status(401).json({ error: 'Invalid credentials' });
@@ -335,7 +445,9 @@ app.post('/api/auth/login', (req, res) => {
                 role: user.role
             }
         });
-    });
+    } catch (err) {
+        return res.status(500).json({ error: 'Database error' });
+    }
 });
 
 // ==================== SCHEDULE ROUTES ====================
