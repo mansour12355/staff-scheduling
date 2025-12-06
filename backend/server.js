@@ -58,19 +58,70 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // Database configuration - Auto-detect environment
-const DATABASE_URL = process.env.DATABASE_URL; // Railway provides this for PostgreSQL
-const USE_POSTGRES = !!DATABASE_URL;
+const DATABASE_URL = process.env.DATABASE_URL; // Can be MySQL or SQLite
+const USE_MYSQL = DATABASE_URL && DATABASE_URL.startsWith('mysql://');
 
 let db;
 
-if (USE_POSTGRES) {
-    // PostgreSQL for production (Railway)
-    const { Pool } = require('pg');
-    db = new Pool({
-        connectionString: DATABASE_URL,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+// Database helper functions (must be defined before initializeDatabase is called)
+const dbQuery = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_MYSQL) {
+            db.query(query, params, (err, results) => {
+                if (err) reject(err);
+                else resolve(results);
+            });
+        } else {
+            db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows);
+            });
+        }
     });
-    console.log('Using PostgreSQL database');
+};
+
+const dbRun = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_MYSQL) {
+            db.query(query, params, (err, result) => {
+                if (err) reject(err);
+                else resolve({ insertId: result.insertId, affectedRows: result.affectedRows });
+            });
+        } else {
+            db.run(query, params, function (err) {
+                if (err) reject(err);
+                else resolve({ lastID: this.lastID, changes: this.changes });
+            });
+        }
+    });
+};
+
+const dbGet = (query, params = []) => {
+    return new Promise((resolve, reject) => {
+        if (USE_MYSQL) {
+            db.query(query, params, (err, results) => {
+                if (err) reject(err);
+                else resolve(results[0]);
+            });
+        } else {
+            db.get(query, params, (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            });
+        }
+    });
+};
+
+if (USE_MYSQL) {
+    // MySQL for production (PlanetScale or other MySQL provider)
+    const mysql = require('mysql2');
+    db = mysql.createPool({
+        uri: DATABASE_URL,
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0
+    });
+    console.log('Using MySQL database');
     initializeDatabase();
 } else {
     // SQLite for local development
@@ -85,76 +136,27 @@ if (USE_POSTGRES) {
     });
 }
 
-// Database helper functions
-const dbQuery = (query, params = []) => {
-    return new Promise((resolve, reject) => {
-        if (USE_POSTGRES) {
-            db.query(query, params, (err, result) => {
-                if (err) reject(err);
-                else resolve(result.rows);
-            });
-        } else {
-            db.all(query, params, (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        }
-    });
-};
-
-const dbRun = (query, params = []) => {
-    return new Promise((resolve, reject) => {
-        if (USE_POSTGRES) {
-            db.query(query, params, (err, result) => {
-                if (err) reject(err);
-                else resolve(result);
-            });
-        } else {
-            db.run(query, params, function (err) {
-                if (err) reject(err);
-                else resolve({ lastID: this.lastID, changes: this.changes });
-            });
-        }
-    });
-};
-
-const dbGet = (query, params = []) => {
-    return new Promise((resolve, reject) => {
-        if (USE_POSTGRES) {
-            db.query(query, params, (err, result) => {
-                if (err) reject(err);
-                else resolve(result.rows[0]);
-            });
-        } else {
-            db.get(query, params, (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            });
-        }
-    });
-};
-
 // Initialize database schema and seed data
 async function initializeDatabase() {
     try {
-        if (USE_POSTGRES) {
-            // PostgreSQL schema
+        if (USE_MYSQL) {
+            // MySQL schema
             await dbRun(`
                 CREATE TABLE IF NOT EXISTS staff (
-                    id SERIAL PRIMARY KEY,
+                    id INT AUTO_INCREMENT PRIMARY KEY,
                     name VARCHAR(255) NOT NULL,
                     email VARCHAR(255) UNIQUE NOT NULL,
                     password_hash VARCHAR(255),
                     google_id VARCHAR(255) UNIQUE,
                     role VARCHAR(50) NOT NULL CHECK(role IN ('admin', 'staff')),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             `);
 
             await dbRun(`
                 CREATE TABLE IF NOT EXISTS schedules (
-                    id SERIAL PRIMARY KEY,
-                    staff_id INTEGER NOT NULL,
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    staff_id INT NOT NULL,
                     title VARCHAR(255) NOT NULL,
                     description TEXT,
                     date VARCHAR(50) NOT NULL,
@@ -162,7 +164,7 @@ async function initializeDatabase() {
                     end_time VARCHAR(50) NOT NULL,
                     location VARCHAR(255),
                     status VARCHAR(50) NOT NULL CHECK(status IN ('scheduled', 'completed', 'cancelled')) DEFAULT 'scheduled',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE
                 )
             `);
@@ -215,55 +217,41 @@ async function seedDatabase() {
 
         // Insert admin user
         await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4)'
-                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
             ['Admin User', 'admin@schedule.com', adminPassword, 'admin']
         );
 
         // Insert John Doe
         const johnResult = await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id'
-                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
             ['John Doe', 'john@schedule.com', staffPassword, 'staff']
         );
-        const johnId = USE_POSTGRES ? johnResult.rows[0].id : johnResult.lastID;
+        const johnId = USE_MYSQL ? johnResult.insertId : johnResult.lastID;
 
         // Add sample schedules for John
         await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
-                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [johnId, 'Morning Shift', 'Front desk duty', '2025-12-06', '08:00', '16:00', 'Main Office', 'scheduled']
         );
         await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
-                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [johnId, 'Safety Training', 'Annual safety certification', '2025-12-08', '10:00', '12:00', 'Training Room B', 'scheduled']
         );
 
         // Insert Jane Smith
         const janeResult = await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO staff (name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING id'
-                : 'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
+            'INSERT INTO staff (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
             ['Jane Smith', 'jane@schedule.com', staffPassword, 'staff']
         );
-        const janeId = USE_POSTGRES ? janeResult.rows[0].id : janeResult.lastID;
+        const janeId = USE_MYSQL ? janeResult.insertId : janeResult.lastID;
 
         // Add sample schedules for Jane
         await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
-                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [janeId, 'Delivery Route A', 'North district deliveries', '2025-12-06', '09:00', '17:00', 'Warehouse', 'scheduled']
         );
         await dbRun(
-            USE_POSTGRES
-                ? 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)'
-                : 'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO schedules (staff_id, title, description, date, start_time, end_time, location, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [janeId, 'Evening Shift', 'Customer service', '2025-12-07', '16:00', '00:00', 'Main Office', 'scheduled']
         );
 
