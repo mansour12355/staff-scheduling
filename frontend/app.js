@@ -14,10 +14,52 @@ let socket = null;
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', () => {
+    handleOAuthCallback();
     checkAuth();
     setupEventListeners();
     initializeSocket();
 });
+
+// Handle OAuth Callback
+function handleOAuthCallback() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    const userParam = urlParams.get('user');
+    const error = urlParams.get('error');
+
+    if (error) {
+        const errorDiv = document.getElementById('loginError');
+        errorDiv.textContent = 'Google authentication failed. Please try again.';
+        errorDiv.classList.remove('hidden');
+        // Clean URL
+        window.history.replaceState({}, document.title, '/');
+        return;
+    }
+
+    if (token && userParam) {
+        try {
+            const user = JSON.parse(decodeURIComponent(userParam));
+
+            // Store auth data
+            authToken = token;
+            currentUser = user;
+            localStorage.setItem('authToken', authToken);
+            localStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+            // Clean URL and show dashboard
+            window.history.replaceState({}, document.title, '/');
+            showDashboard();
+        } catch (error) {
+            console.error('Error parsing OAuth callback:', error);
+        }
+    }
+}
+
+// Google OAuth Login
+function loginWithGoogle() {
+    // Redirect to backend OAuth endpoint
+    window.location.href = `${API_BASE_URL}/auth/google`;
+}
 
 // Initialize Socket.IO
 function initializeSocket() {

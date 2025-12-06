@@ -7,6 +7,9 @@ const bodyParser = require('body-parser');
 const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const session = require('express-session');
 
 const app = express();
 const server = http.createServer(app);
@@ -14,6 +17,10 @@ const server = http.createServer(app);
 // Get PORT from environment or default to 3000
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'session-secret-change-in-production';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const CALLBACK_URL = process.env.CALLBACK_URL || `http://localhost:${PORT}/api/auth/google/callback`;
 
 // Configure Socket.IO with CORS
 const io = new Server(server, {
@@ -25,9 +32,27 @@ const io = new Server(server, {
 });
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: true,
+    credentials: true
+}));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, '../frontend')));
+
+// Session middleware (required for Passport)
+app.use(session({
+    secret: SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+}));
+
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
 
 // Initialize SQLite Database
 const db = new sqlite3.Database('./database.db', (err) => {
@@ -48,7 +73,8 @@ function initializeDatabase() {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
+        password_hash TEXT,
+        google_id TEXT UNIQUE,
         role TEXT NOT NULL CHECK(role IN ('admin', 'staff')),
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
@@ -161,7 +187,116 @@ function requireAdmin(req, res, next) {
     next();
 }
 
+// ==================== PASSPORT CONFIGURATION ====================
+
+// Serialize user for session
+passport.serializeUser((user, done) => {
+    done(null, user.id);
+});
+
+// Deserialize user from session
+passport.deserializeUser((id, done) => {
+    db.get('SELECT id, name, email, role FROM staff WHERE id = ?', [id], (err, user) => {
+        done(err, user);
+    });
+});
+
+// Configure Google OAuth Strategy
+if (GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET) {
+    passport.use(new GoogleStrategy({
+        clientID: GOOGLE_CLIENT_ID,
+        clientSecret: GOOGLE_CLIENT_SECRET,
+        callbackURL: CALLBACK_URL
+    },
+        async (accessToken, refreshToken, profile, done) => {
+            try {
+                const googleId = profile.id;
+                const email = profile.emails[0].value;
+                const name = profile.displayName;
+
+                // Check if user exists by Google ID
+                db.get('SELECT * FROM staff WHERE google_id = ?', [googleId], async (err, user) => {
+                    if (err) {
+                        return done(err);
+                    }
+
+                    if (user) {
+                        // User exists with this Google ID
+                        return done(null, user);
+                    }
+
+                    // Check if user exists by email
+                    db.get('SELECT * FROM staff WHERE email = ?', [email], async (err, existingUser) => {
+                        if (err) {
+                            return done(err);
+                        }
+
+                        if (existingUser) {
+                            // Link Google ID to existing account
+                            db.run('UPDATE staff SET google_id = ? WHERE id = ?', [googleId, existingUser.id], (err) => {
+                                if (err) {
+                                    return done(err);
+                                }
+                                existingUser.google_id = googleId;
+                                return done(null, existingUser);
+                            });
+                        } else {
+                            // Create new user
+                            db.run(
+                                'INSERT INTO staff (name, email, google_id, role) VALUES (?, ?, ?, ?)',
+                                [name, email, googleId, 'staff'],
+                                function (err) {
+                                    if (err) {
+                                        return done(err);
+                                    }
+                                    const newUser = {
+                                        id: this.lastID,
+                                        name,
+                                        email,
+                                        google_id: googleId,
+                                        role: 'staff'
+                                    };
+                                    return done(null, newUser);
+                                }
+                            );
+                        }
+                    });
+                });
+            } catch (error) {
+                return done(error);
+            }
+        }));
+} else {
+    console.warn('Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.');
+}
+
 // ==================== AUTH ROUTES ====================
+
+// Google OAuth - Initiate authentication
+app.get('/api/auth/google',
+    passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+// Google OAuth - Callback
+app.get('/api/auth/google/callback',
+    passport.authenticate('google', { failureRedirect: '/?error=auth_failed' }),
+    (req, res) => {
+        // Successful authentication
+        const token = jwt.sign(
+            { id: req.user.id, email: req.user.email, role: req.user.role },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        // Redirect to frontend with token
+        res.redirect(`/?token=${token}&user=${encodeURIComponent(JSON.stringify({
+            id: req.user.id,
+            name: req.user.name,
+            email: req.user.email,
+            role: req.user.role
+        }))}`);
+    }
+);
 
 // Login endpoint
 app.post('/api/auth/login', (req, res) => {
