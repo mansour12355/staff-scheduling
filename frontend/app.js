@@ -523,10 +523,10 @@ async function handleStaffSubmit(e) {
 
         closeStaffModal();
         loadAllStaff();
-        alert('Staff member added successfully!');
+        showNotification('Staff member added successfully!', 'success');
 
     } catch (error) {
-        alert(error.message);
+        showNotification(error.message, 'error');
     }
 }
 
@@ -539,10 +539,6 @@ function escapeHtml(text) {
 
 function showError(message) {
     alert(message);
-}
-document.getElementById('scheduleDate').value = today;
-
-document.getElementById('scheduleModal').classList.add('active');
 }
 
 // Edit Schedule
