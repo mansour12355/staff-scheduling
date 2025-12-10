@@ -1,0 +1,26 @@
+{
+    "name": "staff-scheduling-netlify",
+    "version": "2.0.0",
+    "description": "Staff scheduling system for Netlify with serverless functions",
+    "main": "netlify/functions",
+    "scripts": {
+        "dev": "netlify dev",
+        "build": "echo 'No build step required'"
+    },
+    "keywords": [
+        "scheduling",
+        "netlify",
+        "serverless",
+        "supabase"
+    ],
+    "author": "",
+    "license": "MIT",
+    "dependencies": {
+        "@supabase/supabase-js": "^2.39.0",
+        "bcryptjs": "^2.4.3",
+        "jsonwebtoken": "^9.0.2"
+    },
+    "devDependencies": {
+        "netlify-cli": "^17.10.1"
+    }
+}
