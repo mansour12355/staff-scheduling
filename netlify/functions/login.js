@@ -46,7 +46,16 @@ exports.handler = async (event) => {
             .eq('email', email)
             .single();
 
+        console.log('Supabase query error:', error);
+        console.log('User found:', users ? 'YES' : 'NO');
+        if (users) {
+            console.log('User email:', users.email);
+            console.log('Password hash exists:', users.password_hash ? 'YES' : 'NO');
+            console.log('Hash preview:', users.password_hash ? users.password_hash.substring(0, 20) + '...' : 'NULL');
+        }
+
         if (error || !users) {
+            console.log('Login failed: User not found or database error');
             return {
                 statusCode: 401,
                 headers,
@@ -55,14 +64,20 @@ exports.handler = async (event) => {
         }
 
         // Verify password
+        console.log('Attempting password comparison...');
         const validPassword = await bcrypt.compare(password, users.password_hash);
+        console.log('Password valid:', validPassword);
+
         if (!validPassword) {
+            console.log('Login failed: Password mismatch');
             return {
                 statusCode: 401,
                 headers,
                 body: JSON.stringify({ error: 'Invalid credentials' }),
             };
         }
+
+        console.log('Login successful for:', users.email);
 
         // Generate JWT token
         const token = jwt.sign(
